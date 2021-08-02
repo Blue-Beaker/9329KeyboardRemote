@@ -5,12 +5,15 @@ from tkinter import ttk
 from tkinter import IntVar
 from tkinter import StringVar
 from tkinter import BooleanVar
+from tkinter import simpledialog
 import serial
 import serial.tools
 import serial.tools.list_ports
 import serial.tools.hexlify_codec
 import math
 import binascii
+from socket import *
+import time
 
 try:#windows
     ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -43,6 +46,8 @@ def bitArrayToInt(array):
 #var
 portVar=StringVar()
 portVar.set("None")
+ipVar=StringVar()
+ipVar.set("Set Remote IP")
 baudVar=IntVar()
 baudVar.set(115200)
 captureCheckVar=BooleanVar()
@@ -53,15 +58,24 @@ debugCheckVar=BooleanVar()
 debugCheckVar.set(False)
 address=0x00
 serialPort=None
+remote=0
 #port
 def hexWrite(port,hexdata):
     packet=bytearray()
     for byte in hexdata:
         packet.append(byte)
-    port.write(packet)
+    if portVar.get()=="Remote":
+        port.send(packet)
+        print(packet)
+    else:
+        port.write(packet)
 def hexRead(port,size):
     output=bytearray()
-    packet=port.read(size)
+    if portVar.get()=="Remote":
+        packet=port.recv(size)
+        print(packet)
+    else:
+        packet=port.read(size)
     for byte in packet:
         output.append(byte)
     return output
@@ -125,7 +139,7 @@ def write9329(port,addr,cmd,data):
         serialOutput.insert("end",f"{exc}\n")
         serialOutput.see(serialOutput.size())
 #SerialSel
-def openSerial():
+def initPort():
     global pressedKeysCont,pressedKeysNormal
     pressedKeysCont=[0,0,0,0,0,0,0,0]
     for i in [0,1,2,3,4,5,6,7]:
@@ -134,8 +148,12 @@ def openSerial():
     keyFrame.focus_set()
     try:
         global serialPort
-        serialPort=serial.Serial(port=portVar.get(),baudrate=baudVar.get())
-        serialPort.timeout=2
+        if portVar.get()=="Remote":
+            serialPort = socket(AF_INET, SOCK_STREAM)
+            serialPort.connect((ipVar.get(),23))
+        else:
+            serialPort=serial.Serial(port=portVar.get(),baudrate=baudVar.get())
+            serialPort.timeout=2
         linkButton.configure(text="Close Port",command=closeSerial)
         portBox.configure(state="disabled")
         baudBox.configure(state="disabled")
@@ -147,7 +165,7 @@ def openSerial():
 def closeSerial():
     global serialPort
     serialPort.close()
-    linkButton.configure(text="Open Port",command=openSerial)
+    linkButton.configure(text="Open Port",command=initPort)
     portBox.configure(state="normal")
     baudBox.configure(state="normal")
 def refreshPorts():
@@ -158,6 +176,7 @@ def refreshPorts():
     for port in portlist:
         portMenu.add_radiobutton(label=str(port),variable=portVar,value=port.device)
         portNameList.append(port.device)
+    portMenu.add_radiobutton(label="Serial over TCP",variable=portVar,value="Remote")
 #Keyboard
 dictKeyCont=dict({
     65507:7,#LCTRL
@@ -304,12 +323,11 @@ dictKeyNormal=dict({
     65363:0x4f,#Right
     65364:0x51,#Down
     })
-dictKeyMedia=dict({})
 pressedKeysCont=[0,0,0,0,0,0,0,0]
 pressedKeysNormal=bytearray()
-pressedKeysMedia=[]
+pressedKeysMedia=[[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0]]
 def sendKeys():
-    global serialPort,address,pressedKeysNormal,pressedKeysCont,pressedKeysMedia,listButtonCtrl,pressedKeysCont
+    global serialPort,address,pressedKeysNormal,pressedKeysCont,listButtonCtrl,pressedKeysCont
     packet=bytearray()
     packet.append(bitArrayToInt(pressedKeysCont))
     packet.append(0x00)
@@ -339,7 +357,7 @@ def releaseNormal(hidcode):
         sendKeys()
     except:
         pass
-def pressCont(index,press):
+def pressCont(index,press=-1):
     global pressedKeysCont
     if press==-1:
         press=1-pressedKeysCont[index]
@@ -352,8 +370,9 @@ def pressCont(index,press):
     else:
         listButtonCtrl[index].config(style="TButton")
 def pressCapture(event):
-    global dictKeyNormal,dictKeyCont,pressedKeysNormal,pressedKeysCont,dictKeyMedia
+    global dictKeyNormal,dictKeyCont,pressedKeysNormal,pressedKeysCont
     keylabel.configure(text=f"Pressed:{event.keysym},{event.keysym_num}")
+
     keySpace.focus_set()
     if captureCheckVar.get():
         key=event.keysym_num
@@ -372,7 +391,7 @@ def pressCapture(event):
             except:
                 pressNormal(hidcode)
 def releaseCapture(event):
-    global dictKeyNormal,dictKeyCont,pressedKeysNormal,pressedKeysCont,dictKeyMedia
+    global dictKeyNormal,dictKeyCont,pressedKeysNormal,pressedKeysCont
     keylabel.configure(text=f"Released:{event.keysym},{event.keysym_num}")
     if captureCheckVar.get():
         try:
@@ -386,11 +405,20 @@ def releaseCapture(event):
         except Exception as exc:
             print(exc)
             print(pressedKeysNormal)
-
+def pressMedia(keyByte,keyBit,press):
+    global pressedKeysMedia
+    pressedKeysMedia[keyByte][keyBit]=press
+    packet=bytearray()
+    packet.append(0x02)
+    packet.append(bitArrayToInt(pressedKeysMedia[0]))
+    packet.append(bitArrayToInt(pressedKeysMedia[1]))
+    packet.append(bitArrayToInt(pressedKeysMedia[2]))
+    write9329(port=serialPort,addr=address,cmd=0x03,data=packet)
+    write9329(serialPort,address,0x01,bytearray())
 #Menubar
 menubar = tkinter.Menu(root)
-portMenu=tkinter.Menu(menubar,tearoff=0,selectcolor="lime")
-baudMenu=tkinter.Menu(menubar,tearoff=0,selectcolor="lime")
+portMenu=tkinter.Menu(menubar,tearoff=0,selectcolor="green")
+baudMenu=tkinter.Menu(menubar,tearoff=0,selectcolor="green")
 for baud in [1200,2400,4800,9600,19200,38400,57600,115200]:
      baudMenu.add_radiobutton(label=str(baud),variable=baudVar)
 menubar.add_cascade(label="Port", menu=portMenu)
@@ -400,18 +428,24 @@ menubar.add_cascade(label="Baud", menu=baudMenu)
 
 #Info
 infoFrame=ttk.Frame(root,width=100)
-linkButton=ttk.Button(infoFrame,text="Open Port",command=openSerial)
+linkButton=ttk.Button(infoFrame,text="Open Port",command=initPort)
+linkButton.place(relx=0,rely=0,relwidth=1,relheight=0.1)
+portBox=ttk.Menubutton(infoFrame,textvariable=portVar,menu=portMenu)
+baudBox=ttk.Menubutton(infoFrame,textvariable=baudVar,menu=baudMenu)
+portBox.place(relx=0,rely=0.1,relwidth=0.5,relheight=0.1)
+baudBox.place(relx=0.5,rely=0.1,relwidth=0.5,relheight=0.1)
+
+remoteIpButton=ttk.Button(infoFrame,textvariable=ipVar,command=lambda :ipVar.set(simpledialog.askstring("Serial over TCP","Remote IP:")))
+remoteIpButton.place(relx=0,rely=0.2,relwidth=1,relheight=0.1)
+
 keylabel=ttk.Label(infoFrame,text="Key=",width=20)
 infolabel=ttk.Label(infoFrame,text="Ver:,USB:",width=20)
 locklabel=ttk.Label(infoFrame,text="Num0 Caps0 Scroll0")
 infoFrame.place(relx=0,rely=0,relwidth=0.2,relheight=1)
-linkButton.place(relx=0,rely=0,relwidth=1,relheight=0.1)
-keylabel.place(relx=0,rely=0.1,relwidth=1,relheight=0.1)
-infolabel.place(relx=0,rely=0.2,relwidth=1,relheight=0.1)
-locklabel.place(relx=0,rely=0.3,relwidth=1,relheight=0.1)
+keylabel.place(relx=0,rely=0.3,relwidth=0.5,relheight=0.1)
+infolabel.place(relx=0.5,rely=0.3,relwidth=0.5,relheight=0.1)
+locklabel.place(relx=0,rely=0.4,relwidth=1,relheight=0.1)
 
-portBox=ttk.Menubutton(infoFrame,textvariable=portVar,menu=portMenu)
-baudBox=ttk.Menubutton(infoFrame,textvariable=baudVar,menu=baudMenu)
 captureCheck=ttk.Checkbutton(infoFrame,text="Capture",variable=captureCheckVar)
 captureCheck.place(relx=0,rely=0.5,relwidth=0.3,relheight=0.1)
 stickyCheck=ttk.Checkbutton(infoFrame,text="Sticky",variable=stickyCheckVar)
@@ -419,8 +453,6 @@ stickyCheck.place(relx=0.3,rely=0.5,relwidth=0.3,relheight=0.1)
 debugCheck=ttk.Checkbutton(infoFrame,text="Debug",variable=debugCheckVar)
 debugCheck.place(relx=0.6,rely=0.5,relwidth=0.3,relheight=0.1)
 
-portBox.place(relx=0,rely=0.4,relwidth=0.5,relheight=0.1)
-baudBox.place(relx=0.5,rely=0.4,relwidth=0.5,relheight=0.1)
 serialOutputPanel=ttk.Frame(infoFrame)
 serialOutput=tkinter.Listbox(serialOutputPanel)
 serialXScroll=ttk.Scrollbar(serialOutputPanel,orient="horizontal",command=serialOutput.xview)
@@ -730,6 +762,65 @@ bindButton(keyDpadLeft,0x50)
 keyDpadRight=ttk.Button(keyFrame,text=">")
 keyDpadRight.place(relx=0.85,rely=0.85,relwidth=0.05,relheight=0.15)
 bindButton(keyDpadRight,0x4f)
+#Media keys
+def bindButtonMedia(button,keyByte,keyBit):
+    button.bind("<ButtonPress>",lambda event:pressMedia(keyByte,keyBit,1))
+    button.bind("<ButtonRelease>",lambda event:pressMedia(keyByte,keyBit,0))
+keyMute=ttk.Button(keyFrame,text="Vx")
+keyMute.place(relx=0,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyMute,0,5)
+keyVolDown=ttk.Button(keyFrame,text="V-")
+keyVolDown.place(relx=0.05,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyVolDown,0,6)
+keyVolUp=ttk.Button(keyFrame,text="V+")
+keyVolUp.place(relx=0.1,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyVolUp,0,7)
+keyPrev=ttk.Button(keyFrame,text="Prev")
+keyPrev.place(relx=0.15,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyPrev,0,2)
+keyPlayPause=ttk.Button(keyFrame,text="Play\nPause")
+keyPlayPause.place(relx=0.2,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyPlayPause,0,4)
+keyNext=ttk.Button(keyFrame,text="Next")
+keyNext.place(relx=0.25,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyNext,0,3)
+keyStop=ttk.Button(keyFrame,text="Stop")
+keyStop.place(relx=0.3,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyStop,0,1)
+keyEject=ttk.Button(keyFrame,text="Eject")
+keyEject.place(relx=0.35,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyEject,0,0)
+keyRewind=ttk.Button(keyFrame,text="Rw")
+keyRewind.place(relx=0.4,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyRewind,2,0)
+keyRecord=ttk.Button(keyFrame,text="Rec")
+keyRecord.place(relx=0.45,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyRecord,2,1)
+keyMinimize=ttk.Button(keyFrame,text="--")
+keyMinimize.place(relx=0.5,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyMinimize,2,2)
+keyExplorer=ttk.Button(keyFrame,text="Explorer")
+keyExplorer.place(relx=0.55,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyExplorer,2,3)
+keyScreensave=ttk.Button(keyFrame,text="ScrSav")
+keyScreensave.place(relx=0.6,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyScreensave,2,4)
+keyCalculator=ttk.Button(keyFrame,text="Calc")
+keyCalculator.place(relx=0.65,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyCalculator,2,5)
+keyBrowser=ttk.Button(keyFrame,text="WWW")
+keyBrowser.place(relx=0.7,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyBrowser,2,6)
+keyRefresh=ttk.Button(keyFrame,text="Refresh")
+keyRefresh.place(relx=0.75,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyRefresh,2,0)
+keyRefresh=ttk.Button(keyFrame,text="Refresh")
+keyRefresh.place(relx=0.75,rely=0,relwidth=0.05,relheight=0.1)
+bindButtonMedia(keyRefresh,2,1)
+#WWW
+keyRefresh=ttk.Button(keyFrame,text="Ref\nresh")
+keyRefresh.place(relx=0.85,rely=0.1,relwidth=0.05,relheight=0.15)
+bindButtonMedia(keyRefresh,1,0)
 
 listButtonCtrl=[keyRWin,keyRAlt,keyRShift,keyRCtrl,keyLWin,keyLAlt,keyLShift,keyLCtrl]
 dictButtonsNormal=dict({
