@@ -66,14 +66,12 @@ def hexWrite(port,hexdata):
         packet.append(byte)
     if portVar.get()=="Remote":
         port.send(packet)
-        print(packet)
     else:
         port.write(packet)
 def hexRead(port,size):
     output=bytearray()
     if portVar.get()=="Remote":
         packet=port.recv(size)
-        print(packet)
     else:
         packet=port.read(size)
     for byte in packet:
@@ -150,6 +148,7 @@ def initPort():
         global serialPort
         if portVar.get()=="Remote":
             serialPort = socket(AF_INET, SOCK_STREAM)
+            serialPort.settimeout(2)
             serialPort.connect((ipVar.get(),23))
         else:
             serialPort=serial.Serial(port=portVar.get(),baudrate=baudVar.get())
