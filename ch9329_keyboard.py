@@ -110,6 +110,7 @@ def read9329(port):
             infolabel.config(text=f"Ver:{hex(ver)},USB:{usb}")
             lock="{:0>8b}".format(data[2])
             locklabel.config(text=f"Num{lock[-1]} Caps{lock[-2]} Scroll{lock[-3]}")
+    return packet
 def write9329(port,addr,cmd,data):
     try:
         packet=bytearray()
@@ -132,7 +133,7 @@ def write9329(port,addr,cmd,data):
                 showlist.append(format(byte, '02x'))
             serialOutput.insert("end",f"<-{showlist}")
             serialOutput.see(serialOutput.size())
-        read9329(port)
+        return read9329(port)
     except Exception as exc:
         serialOutput.insert("end",f"{exc}\n")
         serialOutput.see(serialOutput.size())
@@ -371,8 +372,8 @@ def pressCont(index,press=-1):
 def pressCapture(event):
     global dictKeyNormal,dictKeyCont,pressedKeysNormal,pressedKeysCont
     keylabel.configure(text=f"Pressed:{event.keysym},{event.keysym_num}")
-
-    keySpace.focus_set()
+    if captureCheckVar.get():
+        keySpace.focus_set()
     if captureCheckVar.get():
         key=event.keysym_num
         if stickyCheckVar.get():
@@ -466,8 +467,10 @@ tabs=ttk.Notebook(root)
 tabs.place(relx=0.2,rely=0,relwidth=0.8,relheight=1)
 standardTab=ttk.Frame()
 customTab=ttk.Frame()
+configTab=ttk.Frame()
 tabs.add(standardTab,text="Standard")
 tabs.add(customTab,text="Custom")
+tabs.add(configTab,text="Config")
 #custom
 cmdVar=StringVar()
 dataVar=StringVar()
@@ -492,7 +495,19 @@ customSend=ttk.Button(customTab,text="Send",command=customWrite)
 customSend.place(relx=0.4,rely=0.1,relwidth=0.2,relheight=0.1)
 releaseAllButton=ttk.Button(customTab,text="Release All keys",command=releaseAll)
 releaseAllButton.place(relx=0.6,rely=0.1,relwidth=0.2,relheight=0.1)
-
+#Config
+confVar=StringVar()
+def getConf():
+    global serialPort,address
+    packet=write9329(port=serialPort,addr=address,cmd=0x08,data=binascii.a2b_hex(""))
+    packetStr=binascii.b2a_hex(packet[5:-1])
+    confVar.set(packetStr)
+def setConf():
+    global serialPort,address
+    write9329(port=serialPort,addr=address,cmd=0x09,data=binascii.a2b_hex(confVar.get()))
+ttk.Button(configTab,text="Get Config",command=getConf).place(relx=0,rely=0,relwidth=0.1,relheight=0.1)
+ttk.Button(configTab,text="Set Config",command=setConf).place(relx=0.1,rely=0,relwidth=0.1,relheight=0.1)
+tkinter.Entry(configTab,textvariable=confVar).place(relx=0,rely=0.1,relwidth=1,relheight=0.5)
 
 #Keys
 def bindButton(button,keycode):
