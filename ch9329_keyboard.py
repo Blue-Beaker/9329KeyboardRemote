@@ -6,6 +6,7 @@ from tkinter import IntVar
 from tkinter import StringVar
 from tkinter import BooleanVar
 from tkinter import simpledialog
+import tkinter.constants
 import serial
 import serial.tools
 import serial.tools.list_ports
@@ -13,7 +14,9 @@ import serial.tools.hexlify_codec
 import math
 import binascii
 from socket import *
-import time
+import vlc
+import configparser
+import sys
 
 try:#windows
     ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -45,17 +48,38 @@ def bitArrayToInt(array):
 
 #var
 portVar=StringVar()
-portVar.set("None")
 ipVar=StringVar()
-ipVar.set("Set Remote IP")
 baudVar=IntVar()
-baudVar.set(115200)
+streamUrl=StringVar()
+config=configparser.ConfigParser()
+try:
+    config.read("remote9329.ini")
+    portVar.set(config.get("Config","port"))
+except Exception as exc:
+    portVar.set("None")
+    print(f"Config Read Exception:{exc}")
+try:
+    ipVar.set(config.get("Config","portIp"))
+except Exception as exc:
+    ipVar.set("Set Remote IP")
+    print(f"Config Read Exception:{exc}")
+try:
+    baudVar.set(int(config.get("Config","baudrate")))
+except Exception as exc:
+    baudVar.set(115200)
+    print(f"Config Read Exception:{exc}")
+try:
+    streamUrl.set(config.get("Config","streamUrl"))
+except Exception as exc:
+    streamUrl.set("Set Stream URL")
+    print(f"Config Read Exception:{exc}")
 captureCheckVar=BooleanVar()
 captureCheckVar.set(True)
 stickyCheckVar=BooleanVar()
 stickyCheckVar.set(True)
 debugCheckVar=BooleanVar()
 debugCheckVar.set(False)
+mouseCaptureMode=0
 address=0x00
 serialPort=None
 remote=0
@@ -138,19 +162,24 @@ def write9329(port,addr,cmd,data):
         serialOutput.insert("end",f"{exc}\n")
         serialOutput.see(serialOutput.size())
 #SerialSel
+def keepUp():
+    global serialPort,address
+    write9329(serialPort,address,0x01,bytearray())
+    root.after(10000,keepUp)
 def initPort():
     global pressedKeysCont,pressedKeysNormal
     pressedKeysCont=[0,0,0,0,0,0,0,0]
     for i in [0,1,2,3,4,5,6,7]:
         listButtonCtrl[i].config(style="TButton")
     pressedKeysNormal=bytearray()
-    keyFrame.focus_set()
+    serialOutput.focus_set()
     try:
         global serialPort
         if portVar.get()=="Remote":
             serialPort = socket(AF_INET, SOCK_STREAM)
             serialPort.settimeout(2)
             serialPort.connect((ipVar.get(),23))
+            root.after(10000,keepUp)
         else:
             serialPort=serial.Serial(port=portVar.get(),baudrate=baudVar.get())
             serialPort.timeout=2
@@ -373,7 +402,7 @@ def pressCapture(event):
     global dictKeyNormal,dictKeyCont,pressedKeysNormal,pressedKeysCont
     keylabel.configure(text=f"Pressed:{event.keysym},{event.keysym_num}")
     if captureCheckVar.get():
-        keySpace.focus_set()
+        serialOutput.focus_set()
     if captureCheckVar.get():
         key=event.keysym_num
         if stickyCheckVar.get():
@@ -415,6 +444,64 @@ def pressMedia(keyByte,keyBit,press):
     packet.append(bitArrayToInt(pressedKeysMedia[2]))
     write9329(port=serialPort,addr=address,cmd=0x03,data=packet)
     write9329(serialPort,address,0x01,bytearray())
+#Mouse
+mbPressed=[0,0,0]
+def mouseAbs(x,y,left=0,right=0,middle=0,wheel=0):
+    packet=bytearray()
+    packet.append(0x02)
+    buttons=left+right*2+middle*4
+    packet.append(buttons)
+    packet.append(x%128)
+    packet.append(math.floor(x/128))
+    packet.append(y%128)
+    packet.append(math.floor(y/128))
+    packet.append(wheel)
+    write9329(serialPort,address,0x04,packet)
+def mouseRel(x,y,left=0,right=0,middle=0,wheel=0):
+    packet=bytearray()
+    packet.append(0x01)
+    buttons=left+right*2+middle*4
+    packet.append(buttons)
+    if x<0:
+        cx=max(x,-127)+0xFF
+    else:
+        cx=min(x,127)
+    if y<0:
+        cy=max(x,-127)+0xFF
+    else:
+        cy=min(x,127)
+    packet.append(cx)
+    packet.append(cy)
+    packet.append(wheel)
+    write9329(serialPort,address,0x05,packet)
+def mouseCapture(event,press):
+    if mouseCaptureMode>0:
+        global mbPressed
+        x=event.x
+        y=event.y
+        w=event.widget.winfo_width()
+        h=event.widget.winfo_height()
+        print(f"{event.x},{event.y},{w},{h},{event.num}")
+        if press!=-1:
+            mbPressed[event.num-1]=press
+        if mouseCaptureMode==1:
+            mouseAbs(int(x*2048/w),int(y*2048/h),mbPressed[0],mbPressed[1],mbPressed[2],0)
+        else:
+            global mouseLast
+            if mouseLast:
+                mouseRel(int((x-mouseLast[0])/2),int((y-mouseLast[1])/2),mbPressed[0],mbPressed[1],mbPressed[2],0)
+            mouseLast=[x,y]
+mouseLast=None
+def clearLast():
+    global mouseLast
+    mouseLast=None
+def cycleMouseMode():
+    global mouseCaptureMode
+    mode=mouseCaptureMode+1
+    if mode>2:
+        mode=0
+    mouseCaptureModeButton.configure(text=["Mouse:Off","Mouse:Absolute","Mouse:Relative"][mode])
+    mouseCaptureMode=mode
 #Menubar
 menubar = tkinter.Menu(root)
 portMenu=tkinter.Menu(menubar,tearoff=0,selectcolor="green")
@@ -435,7 +522,7 @@ baudBox=ttk.Menubutton(infoFrame,textvariable=baudVar,menu=baudMenu)
 portBox.place(relx=0,rely=0.1,relwidth=0.5,relheight=0.1)
 baudBox.place(relx=0.5,rely=0.1,relwidth=0.5,relheight=0.1)
 
-remoteIpButton=ttk.Button(infoFrame,textvariable=ipVar,command=lambda :ipVar.set(simpledialog.askstring("Serial over TCP","Remote IP:")))
+remoteIpButton=ttk.Button(infoFrame,textvariable=ipVar,command=lambda :ipVar.set(simpledialog.askstring("Serial over TCP","Remote IP:") or ipVar.get()))
 remoteIpButton.place(relx=0,rely=0.2,relwidth=1,relheight=0.1)
 
 keylabel=ttk.Label(infoFrame,text="Key=",width=20)
@@ -444,7 +531,7 @@ locklabel=ttk.Label(infoFrame,text="Num0 Caps0 Scroll0")
 infoFrame.place(relx=0,rely=0,relwidth=0.2,relheight=1)
 keylabel.place(relx=0,rely=0.3,relwidth=0.5,relheight=0.1)
 infolabel.place(relx=0.5,rely=0.3,relwidth=0.5,relheight=0.1)
-locklabel.place(relx=0,rely=0.4,relwidth=1,relheight=0.1)
+locklabel.place(relx=0,rely=0.4,relwidth=0.5,relheight=0.1)
 
 captureCheck=ttk.Checkbutton(infoFrame,text="Capture",variable=captureCheckVar)
 captureCheck.place(relx=0,rely=0.5,relwidth=0.3,relheight=0.1)
@@ -452,6 +539,8 @@ stickyCheck=ttk.Checkbutton(infoFrame,text="Sticky",variable=stickyCheckVar)
 stickyCheck.place(relx=0.3,rely=0.5,relwidth=0.3,relheight=0.1)
 debugCheck=ttk.Checkbutton(infoFrame,text="Debug",variable=debugCheckVar)
 debugCheck.place(relx=0.6,rely=0.5,relwidth=0.3,relheight=0.1)
+mouseCaptureModeButton=ttk.Button(infoFrame,text="Mouse:Off",command=cycleMouseMode)
+mouseCaptureModeButton.place(relx=0.5,rely=0.4,relwidth=0.5,relheight=0.1)
 
 serialOutputPanel=ttk.Frame(infoFrame)
 serialOutput=tkinter.Listbox(serialOutputPanel)
@@ -468,7 +557,9 @@ tabs.place(relx=0.2,rely=0,relwidth=0.8,relheight=1)
 standardTab=ttk.Frame()
 customTab=ttk.Frame()
 configTab=ttk.Frame()
+streamTab=ttk.Frame()
 tabs.add(standardTab,text="Standard")
+tabs.add(streamTab,text="Stream")
 tabs.add(customTab,text="Custom")
 tabs.add(configTab,text="Config")
 #custom
@@ -508,7 +599,32 @@ def setConf():
 ttk.Button(configTab,text="Get Config",command=getConf).place(relx=0,rely=0,relwidth=0.1,relheight=0.1)
 ttk.Button(configTab,text="Set Config",command=setConf).place(relx=0.1,rely=0,relwidth=0.1,relheight=0.1)
 tkinter.Entry(configTab,textvariable=confVar).place(relx=0,rely=0.1,relwidth=1,relheight=0.5)
-
+#stream
+def setStream():
+    Instance = vlc.Instance()
+    player = Instance.media_player_new()
+    Media = Instance.media_new(streamUrl.get())
+    player.set_xwindow(display.winfo_id())
+    player.set_media(Media)
+    player.play()
+    display.place(relx=0.2,rely=0,relwidth=0.8, relheight=0.7)
+    tabs.place(relx=0.2,rely=0.7,relwidth=0.8,relheight=0.3)
+    display.bind("<Motion>", lambda e:mouseCapture(e,-1)) 
+    display.bind("<Button-1>", lambda e:mouseCapture(e,1)) 
+    display.bind("<ButtonRelease-1>", lambda e:mouseCapture(e,0))
+    display.bind("<Button-2>", lambda e:mouseCapture(e,1))
+    display.bind("<ButtonRelease-2>", lambda e:mouseCapture(e,0))
+    display.bind("<Button-3>", lambda e:mouseCapture(e,1))
+    display.bind("<ButtonRelease-3>", lambda e:mouseCapture(e,0))
+    display.bind("<Enter>", lambda e:clearLast())
+    display.bind("<Leave>", lambda e:clearLast())
+def stopStream():
+    display.place(relx=0.2,rely=0,relwidth=0.8, relheight=0)
+    tabs.place(relx=0.2,rely=0,relwidth=0.8,relheight=1)
+ttk.Button(streamTab,textvariable=streamUrl,command=lambda :streamUrl.set(simpledialog.askstring("Stream URL","URL:") or streamUrl.get())).place(relx=0,rely=0,relwidth=0.8, relheight=1)
+streamButton=ttk.Button(streamTab,text="Set Stream",command=setStream)
+streamButton.place(relx=0.8,rely=0,relwidth=0.2, relheight=1)
+display = ttk.Frame(root)
 #Keys
 def bindButton(button,keycode):
     button.bind("<ButtonPress>",lambda event:pressNormal(keycode))
@@ -835,6 +951,9 @@ bindButtonMedia(keyRefresh,2,1)
 keyRefresh=ttk.Button(keyFrame,text="Ref\nresh")
 keyRefresh.place(relx=0.85,rely=0.1,relwidth=0.05,relheight=0.15)
 bindButtonMedia(keyRefresh,1,0)
+#MouseMover
+trackPad=ttk.Button(keyFrame,text="")
+trackPad.place(relx=0.9,rely=0.55,relwidth=0.1,relheight=0.15)
 
 listButtonCtrl=[keyRWin,keyRAlt,keyRShift,keyRCtrl,keyLWin,keyLAlt,keyLShift,keyLCtrl]
 dictButtonsNormal=dict({
