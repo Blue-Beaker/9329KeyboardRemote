@@ -467,9 +467,9 @@ def mouseRel(x,y,left=0,right=0,middle=0,wheel=0):
     else:
         cx=min(x,127)
     if y<0:
-        cy=max(x,-127)+0xFF
+        cy=max(y,-127)+0xFF
     else:
-        cy=min(x,127)
+        cy=min(y,127)
     packet.append(cx)
     packet.append(cy)
     packet.append(wheel)
